@@ -1,0 +1,128 @@
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from sklearn.cluster import KMeans
+import chromadb
+from transformers import *
+from langchain.document_loaders import WebBaseLoader
+from langchain.indexes import VectorstoreIndexCreator
+from langchain.embeddings import HuggingFaceEmbeddings
+import os
+import numpy as np
+from sklearn.decomposition import PCA
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+from langchain.vectorstores import Chroma
+
+os.environ["HUGGINGFACEHUB_API_TOKEN"] = "Your Token"
+
+article_ulrs = ["https://www.ibm.com/topics/machine-learning",
+                "https://mitsloan.mit.edu/ideas-made-to-matter/machine-learning-explained",
+                "https://www.ibm.com/topics/neural-networks",
+                "https://www.ibm.com/topics/convolutional-neural-networks", 
+                "https://machinelearningmastery.com/what-are-large-language-models/",
+                "https://www.techtarget.com/whatis/definition/support-vector-machine-SVM",
+                "https://www.ibm.com/topics/recurrent-neural-networks", 
+                "https://blogs.nvidia.com/blog/2022/03/25/what-is-a-transformer-model/",
+                "https://machinelearningmastery.com/a-brief-introduction-to-bert/",
+                "https://kaitchup.substack.com/p/a-gentle-introduction-to-gpt-models-e02b093a495b"
+               ]
+
+
+loader        =  WebBaseLoader(article_ulrs)
+index         =  VectorstoreIndexCreator(embedding = HuggingFaceEmbeddings()).from_loaders([loader])
+data          =  loader.load()
+text_splitter =  RecursiveCharacterTextSplitter(chunk_size = 10000, chunk_overlap = 0)
+all_splits    =  text_splitter.split_documents(data)
+
+vectorstore   =  Chroma.from_documents(documents = all_splits, embedding = HuggingFaceEmbeddings())
+
+
+
+kmeans = KMeans(n_clusters=10)
+kmeans.fit(vectorstore.vectors)
+cluster_labels = kmeans.predict(vectorstore.vectors)
+vectorstore.save_cluster_labels(cluster_labels, "cluster_labels.npz")
+
+
+question = "what is a neural network?"
+docs = vectorstore.similarity_search(question)
+
+
+from langchain.chains import RetrievalQA
+# from langchain.chat_models import ChatOpenAI
+
+# llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+llm = AutoModelForCausalLM.from_pretrained("gpt2")
+qa_chain = RetrievalQA.from_chain_type(llm, retriever=vectorstore.as_retriever())
+qa_chain({"query": question})
+
+
+
+# Load the embeddings from ChromaDB
+embeddings = data
+
+#apply PCA
+pca = PCA(n_components=0.9)
+
+print(pca.components_)
+print(pca.explained_variance_) 
+
+X_pca = pca.transform(embeddings)
+print(X_pca)
+
+# Set the number of clusters
+k = 100
+
+def kmeans(embeddings, k):
+
+    # Initialize centroids randomly
+    centroids = random.sample(list(embeddings), k)
+    
+    clusters = [[] for _ in range(k)]
+    converged = False
+    
+    while not converged:
+
+        # Assign data points to closest centroids
+        clusters = [[]] * k
+        for point in embeddings:
+            distances = [np.linalg.norm(point - centroid) for centroid in centroids]
+            closest = np.argmin(distances)
+            clusters[closest].append(point)
+        
+        # Update centroids as means of points in clusters
+        new_centroids = []
+        for c in clusters:
+            new_centroids.append(np.average(c, axis=0))
+        
+        # Check for convergence
+        converged = True
+        for old, new in zip(centroids, new_centroids):
+            if not np.array_equal(old, new):
+                converged = False
+                break
+        
+        centroids = new_centroids
+    
+    return np.array(centroids), clusters
+
+
+
+
+tokenizer = AutoTokenizer.from_pretrained("Vamsi/T5_Paraphrase_Paws")
+model = AutoModelForSeq2SeqLM.from_pretrained("Vamsi/T5_Paraphrase_Paws")
+
+
+def get_paraphrased_sentences(model, tokenizer, sentence, num_return_sequences=5, num_beams=5):
+    inputs = tokenizer([sentence], truncation=True, padding="longest", return_tensors="pt")
+    outputs = model.generate(**inputs, num_beams=num_beams, num_return_sequences=num_return_sequences)
+    return tokenizer.batch_decode(outputs, skip_special_tokens=True)
+
+
+sentence    = "Learning is the process of acquiring new understanding, knowledge, behaviors, skills, values, attitudes, and preferences."
+paraphrased = get_paraphrased_sentences(model, tokenizer, sentence, num_beams=10, num_return_sequences=10) 
+
+
+print(get_paraphrased_sentences(model, tokenizer, "One of the best ways to learn is to teach what you've already learned"))
+
+
